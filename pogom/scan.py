@@ -35,7 +35,8 @@ class ScanMetrics:
     NUM_ACCOUNTS = 0
     CURRENT_SCAN_PERCENT = 0.0
 
-
+# TODO: make thread count configurable
+# TODO: make accounds scan adjacent cells to avoid big jumps
 class Scanner(Thread):
     def __init__(self, scan_config):
         Thread.__init__(self)
@@ -110,6 +111,7 @@ class Scanner(Thread):
                 self.scan_config.RESTART = False
                 if self.scan_config.ACCOUNTS_CHANGED:
                     self.scan_config.ACCOUNTS_CHANGED = False
+                    # count(accs) / 23 clamped in [3, 10]
                     num_workers = min(max(int(math.ceil(len(config['ACCOUNTS']) / 23.0)), 3), 10)
                     self.api.resize_workers(num_workers)
                     self.api.add_accounts(config['ACCOUNTS'])
@@ -177,6 +179,7 @@ class ScanConfig(object):
                 self._update_cover()
                 return
 
+    # TODO: use global grid instead of per point - this can eliminate overlapping problems
     def _update_cover(self):
         cover = []
 
@@ -191,13 +194,21 @@ class ScanConfig(object):
             points = [[{'lat2': lat, 'lon2': lng, 's': 0}]]
 
             # The lines below are magic. Don't touch them.
+
+            # i is the i'th layer of hexagons, we stop iterating when all of the generated hexagons's
+            # centers are outside of the radius
             for i in xrange(1, maxint):
                 oor_counter = 0
 
                 points.append([])
+                # for each new cell in the layer get the one of the previous
+                # and angle to it's center and calculate new cell center
                 for j in range(0, 6 * i):
-                    p = points[i - 1][(j - j / i - 1 + (j % i == 0))]
-                    p_new = Geodesic.WGS84.Direct(p['lat2'], p['lon2'], (j+i-1)/i * 60, d)
+                    prev_idx = (j - j / i - 1 + (j % i == 0))
+                    angle_to_prev = (j+i-1)/i * 60
+
+                    p = points[i - 1][prev_idx]
+                    p_new = Geodesic.WGS84.Direct(p['lat2'], p['lon2'], angle_to_prev, d)
                     p_new['s'] = Geodesic.WGS84.Inverse(p_new['lat2'], p_new['lon2'], lat, lng)['s12']
                     points[i].append(p_new)
 

@@ -23,6 +23,11 @@ from . import config
 
 log = logging.getLogger(__name__)
 
+def gSleep(val):
+    steps = int(float(val) / 0.1)
+    for i in range(0, steps):
+        time.sleep(0.1)
+
 
 class ScanMetrics:
     CONSECUTIVE_MAP_FAILS = 0
@@ -76,32 +81,33 @@ class Scanner(Thread):
             log.info('Completed {:5.2f}% of scan.'.format(ScanMetrics.CURRENT_SCAN_PERCENT))
 
     def scan(self):
-        ScanMetrics.NUM_STEPS = len(self.scan_config.COVER)
-        log.info("Starting scan of {} locations".format(ScanMetrics.NUM_STEPS))
+        gSleep(5)
+        # ScanMetrics.NUM_STEPS = len(self.scan_config.COVER)
+        # log.info("Starting scan of {} locations".format(ScanMetrics.NUM_STEPS))
 
-        for i, next_pos in enumerate(self.next_position()):
-            log.debug('Scanning step {:d} of {:d}.'.format(i, ScanMetrics.NUM_STEPS))
-            log.debug('Scan location is {:f}, {:f}'.format(next_pos[0], next_pos[1]))
+        # for i, next_pos in enumerate(self.next_position()):
+        #     log.debug('Scanning step {:d} of {:d}.'.format(i, ScanMetrics.NUM_STEPS))
+        #     log.debug('Scan location is {:f}, {:f}'.format(next_pos[0], next_pos[1]))
 
-            # TODO: Add error throttle
+        #     # TODO: Add error throttle
 
-            cell_ids = get_cell_ids(next_pos[0], next_pos[1], radius=70)
-            timestamps = [0, ] * len(cell_ids)
-            self.api.get_map_objects(
-                latitude=f2i(next_pos[0]),
-                longitude=f2i(next_pos[1]),
-                cell_id=cell_ids,
-                since_timestamp_ms=timestamps,
-                position=next_pos,
-                callback=Scanner.callback)
+        #     cell_ids = get_cell_ids(next_pos[0], next_pos[1], radius=70)
+        #     timestamps = [0, ] * len(cell_ids)
+        #     self.api.get_map_objects(
+        #         latitude=f2i(next_pos[0]),
+        #         longitude=f2i(next_pos[1]),
+        #         cell_id=cell_ids,
+        #         since_timestamp_ms=timestamps,
+        #         position=next_pos,
+        #         callback=Scanner.callback)
 
-        while not self.api.is_work_queue_empty():
-            # Location change
-            if self.scan_config.RESTART:
-                log.info("Restarting scan")
-                self.api.empty_work_queue()
-            else:
-                time.sleep(2)
+        # while not self.api.is_work_queue_empty():
+        #     # Location change
+        #     if self.scan_config.RESTART:
+        #         log.info("Restarting scan")
+        #         self.api.empty_work_queue()
+        #     else:
+        #         time.sleep(2)
 
         #self.api.wait_until_done()  # Work queue empty != work done
 
@@ -112,7 +118,7 @@ class Scanner(Thread):
                 if self.scan_config.ACCOUNTS_CHANGED:
                     self.scan_config.ACCOUNTS_CHANGED = False
                     # count(accs) / 23 clamped in [3, 10]
-                    num_workers = min(max(int(math.ceil(len(config['ACCOUNTS']) / 23.0)), 3), 10)
+                    num_workers = 1# min(max(int(math.ceil(len(config['ACCOUNTS']) / 23.0)), 3), 10)
                     self.api.resize_workers(num_workers)
                     self.api.add_accounts(config['ACCOUNTS'])
 
@@ -121,7 +127,7 @@ class Scanner(Thread):
 
             if (not self.scan_config.SCAN_LOCATIONS or
                     not config.get('ACCOUNTS', None)):
-                time.sleep(5)
+                gSleep(5)
                 continue
             ScanMetrics.STEPS_COMPLETED = 0
             scan_start_time = time.time()
@@ -191,7 +197,12 @@ class ScanConfig(object):
             radius = scan_location["radius"]
 
             d = math.sqrt(3) * 70
-            points = [[{'lat2': lat, 'lon2': lng, 's': 0}]]
+            points = [[{'lat2': lat, 'lon2': lng, 's': 0, 'verts': []}]]
+
+            for c in range(0, 6):
+                angle = 30 + 60 * c
+                vertex = Geodesic.WGS84.Direct(points[0][0]['lat2'], points[0][0]['lon2'], angle, 70)
+                points[0][0]['verts'].append((vertex['lat2'], vertex['lon2']))
 
             # The lines below are magic. Don't touch them.
 
@@ -210,6 +221,15 @@ class ScanConfig(object):
                     p = points[i - 1][prev_idx]
                     p_new = Geodesic.WGS84.Direct(p['lat2'], p['lon2'], angle_to_prev, d)
                     p_new['s'] = Geodesic.WGS84.Inverse(p_new['lat2'], p_new['lon2'], lat, lng)['s12']
+
+                    p_new['verts'] = []
+                    for c in range(0, 6):
+                        angle = 30 + 60 * c
+                        vertex = Geodesic.WGS84.Direct(p['lat2'], p['lon2'], angle, 70)
+                        p_new['verts'].append((vertex['lat2'], vertex['lon2']))
+
+                    log.info(p_new['verts'])
+
                     points[i].append(p_new)
 
                     if p_new['s'] > radius:
@@ -218,7 +238,7 @@ class ScanConfig(object):
                 if oor_counter == 6 * i:
                     break
 
-            cover.extend({"lat": p['lat2'], "lng": p['lon2']}
+            cover.extend({"lat": p['lat2'], "lng": p['lon2'], "verts": p['verts']}
                          for sublist in points for p in sublist if p['s'] < radius)
 
         self.COVER = cover

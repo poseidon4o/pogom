@@ -38,6 +38,7 @@ class Pogom(Flask):
         self.route('/config', methods=['GET'])(self.get_config_site)
         self.route('/config', methods=['POST'])(self.post_config_site)
         self.route('/login', methods=['GET', 'POST'])(self.login)
+        self.route('/regions', methods=['GET'])(self.regions)
 
     def is_authenticated(self):
         if config.get('CONFIG_PASSWORD', None) and not request.cookies.get("auth") == config['AUTH_KEY']:
@@ -140,6 +141,9 @@ class Pogom(Flask):
                     'SCAN_LOCATIONS': self.scan_config.SCAN_LOCATIONS.values(),
                     'ACCOUNTS': config['ACCOUNTS']}
             f.write(json.dumps(data))
+
+    def regions(self):
+        return jsonify(self.scan_config.COVER)
 
     def map_data(self):
         d = {}

@@ -402,6 +402,25 @@ function newMarker(latitude, longitude) {
     return marker;
 }
 
+function drawHexagon(vertecies) {
+    var points = []
+    for (var c = 0; c < vertecies.length; ++c) {
+        points.push({lat: vertecies[c][0], lng: vertecies[c][1]});
+    }
+    // close the polygon
+    points.push({lat: vertecies[0][0], lng: vertecies[0][1]});
+
+    var poly = new google.maps.Polygon({
+          path: points,
+          geodesic: true,
+          strokeColor: '#00FF00',
+          strokeOpacity: 1.0,
+          strokeWeight: 2,
+          fillOpacity: 0
+        });
+    poly.setMap(map);
+}
+
 function newCircle(latitude, longitude, radius) {
     var coverCircle = new google.maps.Circle({
         strokeColor: '#FF0000',
@@ -430,6 +449,22 @@ function removeScanLocation(key) {
     return false;
 }
 
+function updateCover(data) {
+    for (var c = 0; c < data.length; ++c) {
+        console.log('Hex ', c, data[c]['lat'], data[c]['lng']);
+
+        var marker = new google.maps.Marker({
+          position: {lat: data[c]['lat'], lng: data[c]['lng']},
+          icon: {
+            path: google.maps.SymbolPath.CIRCLE,
+            scale: 5
+          },
+          draggable: false,
+          map: map
+        });
+        drawHexagon(data[c]['verts']);
+    }
+}
 
 function updateScanLocations(updatedScanLocations) {
     var helperMap = new Map();
@@ -458,6 +493,11 @@ function updateScanLocations(updatedScanLocations) {
 //               'pokestops': document.getElementById('pokestops-checkbox').checked,
 //               'pokestops-lured': document.getElementById('pokestops-lured-checkbox').checked,
 function updateMap() {
+    $.getJSON("cover", {format: "json"}).done(function(data) {
+        updateCover(data['cover']);
+    });
+
+
     $.ajax({
         url: "map-data",
         type: 'GET',

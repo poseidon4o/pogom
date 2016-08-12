@@ -221,15 +221,6 @@ class ScanConfig(object):
                     p = points[i - 1][prev_idx]
                     p_new = Geodesic.WGS84.Direct(p['lat2'], p['lon2'], angle_to_prev, d)
                     p_new['s'] = Geodesic.WGS84.Inverse(p_new['lat2'], p_new['lon2'], lat, lng)['s12']
-
-                    p_new['verts'] = []
-                    for c in range(0, 6):
-                        angle = 30 + 60 * c
-                        vertex = Geodesic.WGS84.Direct(p['lat2'], p['lon2'], angle, 70)
-                        p_new['verts'].append((vertex['lat2'], vertex['lon2']))
-
-                    log.info(p_new['verts'])
-
                     points[i].append(p_new)
 
                     if p_new['s'] > radius:
@@ -238,7 +229,17 @@ class ScanConfig(object):
                 if oor_counter == 6 * i:
                     break
 
-            cover.extend({"lat": p['lat2'], "lng": p['lon2'], "verts": p['verts']}
+            cover.extend({"lat": p['lat2'], "lng": p['lon2']}
                          for sublist in points for p in sublist if p['s'] < radius)
+
+        for cell in cover:
+            vertices = []
+            for c in range(0, 6):
+                angle = 30 + 60 * c
+                vertex = Geodesic.WGS84.Direct(cell['lat'], cell['lng'], angle, 70)
+                vertices.append((vertex['lat2'], vertex['lon2']))
+
+            cell['verts'] = vertices
+
 
         self.COVER = cover

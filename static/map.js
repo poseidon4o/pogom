@@ -411,14 +411,14 @@ function drawHexagon(vertecies) {
     points.push({lat: vertecies[0][0], lng: vertecies[0][1]});
 
     var poly = new google.maps.Polygon({
-          path: points,
-          geodesic: true,
-          strokeColor: '#00FF00',
-          strokeOpacity: 1.0,
-          strokeWeight: 2,
-          fillOpacity: 0
-        });
-    poly.setMap(map);
+        path: points,
+        geodesic: true,
+        strokeColor: '#00FF00',
+        strokeOpacity: 1.0,
+        strokeWeight: 2,
+        fillOpacity: 0,
+        map: map,
+    });
 }
 
 function newCircle(latitude, longitude, radius) {

@@ -12,6 +12,7 @@ var excludedPokemon = [];
 var map;
 var scanLocations = new Map();
 var coverCircles = [];
+var fullCover = [];
 var newLocationMarker;
 
 var $heatMapMons = $("#heat-map-mons");
@@ -402,24 +403,6 @@ function newMarker(latitude, longitude) {
     return marker;
 }
 
-function drawHexagon(vertecies) {
-    var points = []
-    for (var c = 0; c < vertecies.length; ++c) {
-        points.push({lat: vertecies[c][0], lng: vertecies[c][1]});
-    }
-    // close the polygon
-    points.push({lat: vertecies[0][0], lng: vertecies[0][1]});
-
-    var poly = new google.maps.Polygon({
-        path: points,
-        geodesic: true,
-        strokeColor: '#00FF00',
-        strokeOpacity: 1.0,
-        strokeWeight: 2,
-        fillOpacity: 0,
-        map: map,
-    });
-}
 
 function newCircle(latitude, longitude, radius) {
     var coverCircle = new google.maps.Circle({
@@ -449,20 +432,69 @@ function removeScanLocation(key) {
     return false;
 }
 
+
+function drawHexagon(vertecies) {
+    var points = []
+    for (var c = 0; c < vertecies.length; ++c) {
+        points.push({lat: vertecies[c][0], lng: vertecies[c][1]});
+    }
+    // close the polygon
+    points.push({lat: vertecies[0][0], lng: vertecies[0][1]});
+
+    var poly = new google.maps.Polygon({
+        path: points,
+        geodesic: true,
+        strokeColor: '#00FF00',
+        strokeOpacity: 0.75,
+        strokeWeight: 1,
+        fillOpacity: 0,
+        map: map,
+    });
+    fullCover.push(poly);
+}
+
+
 function updateCover(data) {
+    var acc_paths = {}
+    var colors = ["#FF0000", "#0000FF", "#FF00FF"];
+
     for (var c = 0; c < data.length; ++c) {
-        console.log('Hex ', c, data[c]['lat'], data[c]['lng']);
+        var acc = data[c]['acc'];
+        if (!(acc in acc_paths)) {
+            acc_paths[acc] = [];
+        }
+
+        acc_paths[acc].push({lat: data[c]['lat'], lng: data[c]['lng']});
 
         var marker = new google.maps.Marker({
-          position: {lat: data[c]['lat'], lng: data[c]['lng']},
-          icon: {
-            path: google.maps.SymbolPath.CIRCLE,
-            scale: 5
-          },
-          draggable: false,
-          map: map
+            position: {lat: data[c]['lat'], lng: data[c]['lng']},
+            icon: {
+                path: google.maps.SymbolPath.CIRCLE,
+                scale: 1
+            },
+            draggable: false,
+            map: map
         });
+        marker.infoWindow = new google.maps.InfoWindow({
+            content: "<b>" + acc + "</b>",
+            disableAutoPan: true
+        });
+        marker.addListener('click', function () {
+            this.infoWindow.open(map, this);
+        });
+        fullCover.push(marker);
         drawHexagon(data[c]['verts']);
+    }
+
+    for (var acc in acc_paths) {
+        var path = new google.maps.Polyline({
+            path: acc_paths[acc],
+            strokeColor: colors[parseInt(Math.random() * (colors.length - 1))],
+            strokeOpacity: 1.0,
+            strokeWeight: 1,
+            map: map
+        });
+        fullCover.push(path)
     }
 }
 
@@ -493,6 +525,11 @@ function updateScanLocations(updatedScanLocations) {
 //               'pokestops': document.getElementById('pokestops-checkbox').checked,
 //               'pokestops-lured': document.getElementById('pokestops-lured-checkbox').checked,
 function updateMap() {
+    for (var c = 0; c < fullCover.length; ++c) {
+        fullCover[c].setVisible(false);
+        fullCover[c].setMap(null);
+    }
+    fullCover = [];
     $.getJSON("cover", {format: "json"}).done(function(data) {
         updateCover(data['cover']);
     });

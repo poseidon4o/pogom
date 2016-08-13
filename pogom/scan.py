@@ -188,6 +188,8 @@ class ScanConfig(object):
     # TODO: use global grid instead of per point - this can eliminate overlapping problems
     def _update_cover(self):
         cover = []
+        cell_count = 0
+        region_count = len(self.SCAN_LOCATIONS.values())
 
         # Go backwards through locations so that last location
         # will be scanned first
@@ -211,7 +213,7 @@ class ScanConfig(object):
             for i in xrange(1, maxint):
                 oor_counter = 0
 
-                points.append([])
+                layer = []
                 # for each new cell in the layer get the one of the previous
                 # and angle to it's center and calculate new cell center
                 for j in range(0, 6 * i):
@@ -221,25 +223,91 @@ class ScanConfig(object):
                     p = points[i - 1][prev_idx]
                     p_new = Geodesic.WGS84.Direct(p['lat2'], p['lon2'], angle_to_prev, d)
                     p_new['s'] = Geodesic.WGS84.Inverse(p_new['lat2'], p_new['lon2'], lat, lng)['s12']
-                    points[i].append(p_new)
+                    layer.append(p_new)
 
                     if p_new['s'] > radius:
                         oor_counter += 1
 
+                points.append(layer)
                 if oor_counter == 6 * i:
                     break
 
-            cover.extend({"lat": p['lat2'], "lng": p['lon2']}
-                         for sublist in points for p in sublist if p['s'] < radius)
+            points.pop()
+            # get the last i elements and push them on the front, so every layer starts
+            # one cell anti clockwise before the previous
+            for c, layer in enumerate(points):
+                for f in range(0, 0):
+                    layer = [layer.pop()] + layer
+                points[c] = layer
 
-        for cell in cover:
-            vertices = []
-            for c in range(0, 6):
-                angle = 30 + 60 * c
-                vertex = Geodesic.WGS84.Direct(cell['lat'], cell['lng'], angle, 70)
-                vertices.append((vertex['lat2'], vertex['lon2']))
+            cells = [{"lat": p['lat2'], "lng": p['lon2']} for sublist in points for p in sublist]
+            cell_count += len(cells)
+            cover.append(cells)
 
-            cell['verts'] = vertices
+        log.info("we have {} cells in {} regions".format(cell_count, region_count))
+        self._make_paths(cover, cell_count)
+        self.COVER = self._get_cover_with_cells(cover)
+
+    def _get_cover_with_cells(self, cover):
+        cell_cover = []
+        for patch in cover:
+            for cell in patch:
+                vertices = []
+                for c in range(0, 6):
+                    angle = 30 + 60 * c
+                    vertex = Geodesic.WGS84.Direct(cell['lat'], cell['lng'], angle, 70)
+                    vertices.append((vertex['lat2'], vertex['lon2']))
+                cell['verts'] = vertices
+                cell_cover.append(cell)
+        return cell_cover
+
+    def _make_paths(self, cover, cell_count):
+        accs = config['ACCOUNTS']
+        acc_count = len(accs)
+        region_count = len(cover)
+
+        if acc_count < region_count:
+            log.error("You have less accounts than regions - reduce region count or add accounts")
 
 
-        self.COVER = cover
+        unames = [acc['username'] for acc in accs]
+
+        # give every region atleast 1 acc
+        region_accs = [1 for _ in cover]
+        remaining = acc_count - len(region_accs)
+
+        # calculate possible extra accs
+        for c, region in enumerate(cover):
+            region_cells = len(region)
+            # region_weight * acc_count = accs for this region
+            print("region_cells:{} cell_count:{} acc_count:{}".format(region_cells, cell_count, acc_count))
+            extra_acc = (float(region_cells) / float(cell_count)) * float(acc_count)
+            # find how much this region gets and remove the guaranteed 1
+            extra_acc = int(max(extra_acc, 1)) - 1
+            # clamp to remaining
+            extra_acc = min(extra_acc, remaining)
+            region_accs[c] += extra_acc
+            # clamp at 0 min
+            remaining -= extra_acc
+            # no extras left, leave
+            if remaining <= 0:
+                break
+
+        acc_counter = 0
+        for c, region in enumerate(cover):
+            region_workers = region_accs[c]
+            cell_count = len(region)
+            cells_per_acc = cell_count / region_workers
+
+            idx = 0
+            for acc_idx in range(acc_counter, acc_counter + region_workers):
+                for cell_idx in range(idx, idx + cells_per_acc):
+                    region[cell_idx]['acc'] = unames[acc_idx]
+
+                # move offset
+                idx += cells_per_acc
+
+            acc_counter += region_workers
+            # give the last worker the remaining
+            for c in range(idx, cell_count):
+                region[c]['acc'] = unames[acc_counter - 1]

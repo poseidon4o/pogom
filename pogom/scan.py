@@ -53,7 +53,7 @@ class Scanner(Thread):
 
     def next_position(self):
         for point in self.scan_config.COVER:
-            yield (point["lat"], point["lng"], 0)
+            yield (point["lat"], point["lng"], point['acc'])
 
     @staticmethod
     def callback(response_dict):
@@ -81,35 +81,36 @@ class Scanner(Thread):
             log.info('Completed {:5.2f}% of scan.'.format(ScanMetrics.CURRENT_SCAN_PERCENT))
 
     def scan(self):
-        gSleep(5)
-        # ScanMetrics.NUM_STEPS = len(self.scan_config.COVER)
-        # log.info("Starting scan of {} locations".format(ScanMetrics.NUM_STEPS))
+        ScanMetrics.NUM_STEPS = len(self.scan_config.COVER)
+        log.info("Starting scan of {} locations in {} sec".format(ScanMetrics.NUM_STEPS, 30))
+        # gSleep(30)
 
-        # for i, next_pos in enumerate(self.next_position()):
-        #     log.debug('Scanning step {:d} of {:d}.'.format(i, ScanMetrics.NUM_STEPS))
-        #     log.debug('Scan location is {:f}, {:f}'.format(next_pos[0], next_pos[1]))
+        for i, next_pos in enumerate(self.next_position()):
+            log.debug('Scanning step {:d} of {:d}.'.format(i, ScanMetrics.NUM_STEPS))
+            log.debug('Scan location is {} -> {:f}, {:f}'.format(next_pos[2], next_pos[0], next_pos[1]))
 
-        #     # TODO: Add error throttle
+            # TODO: Add error throttle
 
-        #     cell_ids = get_cell_ids(next_pos[0], next_pos[1], radius=70)
-        #     timestamps = [0, ] * len(cell_ids)
-        #     self.api.get_map_objects(
-        #         latitude=f2i(next_pos[0]),
-        #         longitude=f2i(next_pos[1]),
-        #         cell_id=cell_ids,
-        #         since_timestamp_ms=timestamps,
-        #         position=next_pos,
-        #         callback=Scanner.callback)
+            cell_ids = get_cell_ids(next_pos[0], next_pos[1], radius=70)
+            timestamps = [0, ] * len(cell_ids)
+            self.api.get_map_objects(
+                latitude=f2i(next_pos[0]),
+                longitude=f2i(next_pos[1]),
+                cell_id=cell_ids,
+                since_timestamp_ms=timestamps,
+                position=next_pos,
+                callback=Scanner.callback,
+                username=next_pos[2])
 
-        # while not self.api.is_work_queue_empty():
-        #     # Location change
-        #     if self.scan_config.RESTART:
-        #         log.info("Restarting scan")
-        #         self.api.empty_work_queue()
-        #     else:
-        #         time.sleep(2)
+        while not self.api.is_work_queue_empty():
+            # Location change
+            if self.scan_config.RESTART:
+                log.info("Restarting scan")
+                self.api.empty_work_queue()
+            else:
+                time.sleep(2)
 
-        #self.api.wait_until_done()  # Work queue empty != work done
+        self.api.wait_until_done()  # Work queue empty != work done
 
     def run(self):
         while True:

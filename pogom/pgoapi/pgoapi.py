@@ -31,8 +31,10 @@ import logging
 import requests
 import time
 import math
-from threading import Thread
-from Queue import Queue, PriorityQueue
+import sys
+from threading import Thread, Lock as Mutex
+from Queue import Queue, PriorityQueue, LifoQueue
+from collections import deque
 
 from . import __title__, __version__, __copyright__
 from .rpc_api import RpcApi
@@ -45,14 +47,100 @@ from POGOProtos.Networking.Requests_pb2 import RequestType
 
 logger = logging.getLogger(__name__)
 
+class TaskQueue:
+    def __init__(self):
+        # will map username -> stack of tasks
+        self.data = {}
+        self.mutex = Mutex()
+
+    def push(self, user, item, reAdd=False):
+        self.mutex.acquire()
+        if user not in self.data:
+            self.data[user] = (Mutex(), LifoQueue())
+        self.data[user][1].put(item)
+        # returning task - unlock user and mark task done in stack
+        if reAdd:
+            self.data[user][1].task_done()
+            self.data[user][0].release()
+        self.mutex.release()
+
+    def __len__(self):
+        n = 0
+        self.mutex.acquire()
+        for item in self.data.values():
+            n += item[1].qsize()
+        self.mutex.release()
+        return n
+
+    def pop(self, user):
+        item = None
+        self.mutex.acquire()
+        if not user in self.data:
+            sys.stderr.write("Popping task for {} but it is not in task queue!".format(user))
+            sys.stderr.flush()
+            sys.exit(1)
+        lock, que = self.data[user]
+        lock.acquire()
+        item = que.get()
+        self.mutex.release()
+        return item
+
+    def clear(self):
+        self.mutex.acquire()
+        for _, item in self.data.iteritems():
+            item[0].acquire()
+            while not item[1].empty():
+                try:
+                    item[1].get(False)
+                    item[1].task_done()
+                except Queue.Empty:
+                    break
+            item[0].release()
+        self.mutex.release()
+
+    def popRandom(self):
+        acc = None
+        item = None
+        with self.mutex:
+            for name, data in self.data.iteritems():
+                if not data[0].locked() and not data[1].empty():
+                    data[0].acquire()
+                    if data[1].empty():
+                        data[0].release()
+                        continue
+                    else:
+                        acc = name
+                        item = data[1].get()
+        return acc, item
+
+    def done(self, user):
+        self.mutex.acquire()
+        if not user in self.data:
+            sys.stderr.write("Marking task done for {} but it is not in task queue!".format(user))
+            sys.stderr.flush()
+            sys.exit(1)
+        self.data[user][1].task_done()
+        self.data[user][0].release()
+        self.mutex.release()
+
+    def join(self):
+        self.mutex.acquire()
+        for item in self.data.values():
+            item[0].acquire()
+            item[1].join()
+            item[0].release()
+        self.mutex.release()
+
 
 class PGoApi:
     def __init__(self, signature_lib_path):
         self.set_logger()
 
         self._signature_lib_path = signature_lib_path
-        self._work_queue = Queue()
-        self._auth_queue = PriorityQueue()
+
+        self._tasks = TaskQueue()
+        self._auths = {}
+
         self._workers = []
         self._api_endpoint = 'https://pgorelease.nianticlabs.com/plfe/rpc'
 
@@ -60,7 +148,7 @@ class PGoApi:
 
     def create_workers(self, num_workers):
         for i in xrange(num_workers):
-            worker = PGoApiWorker(self._signature_lib_path, self._work_queue, self._auth_queue)
+            worker = PGoApiWorker(self._signature_lib_path, self._tasks, self._auths)
             worker.daemon = True
             worker.start()
             self._workers.append(worker)
@@ -73,30 +161,6 @@ class PGoApi:
             for i in xrange(workers_now - num_workers):
                 worker = self._workers.pop()
                 worker.stop()
-
-    def set_accounts(self, accounts):
-        old_accounts = []
-        new_accounts = []
-
-        accounts_todo = {}
-        for account in accounts:
-            accounts_todo[account['username']] = accounts['password']
-
-        while not self._auth_queue.empty():
-            # Go through accounts in auth queue and only add those back
-            # that we still want to use
-            next_call, auth_provider = self._auth_queue.get()
-            if auth_provider.username in accounts_todo:
-                old_accounts.append((next_call, auth_provider))
-                del accounts_todo[auth_provider.username]
-
-        while old_accounts:
-            self._auth_queue.put(old_accounts.pop())
-
-        # Add new accounts
-        for username, password in accounts_todo.iteritems():
-            new_accounts.append({'username': username, 'password': password})
-        add_accounts(new_accounts)
 
     def add_accounts(self, accounts):
         for account in accounts:
@@ -112,7 +176,7 @@ class PGoApi:
             else:
                 raise AuthException("Invalid authentication provider - only ptc/google available.")
 
-            self._auth_queue.put((time.time(), auth_provider))
+            self._auths[username] = (time.time(), auth_provider)
 
     def set_logger(self, logger=None):
         self.log = logger or logging.getLogger(__name__)
@@ -126,6 +190,11 @@ class PGoApi:
 
             position = kwargs.pop('position')
             callback = kwargs.pop('callback')
+            acc = kwargs.pop('username')
+
+            if acc not in self._auths:
+                self.log.error('Failed to add task for {}, no such auth'.format(acc))
+                raise AttributeError
 
             if kwargs:
                 method = {RequestType.Value(name): kwargs}
@@ -136,29 +205,26 @@ class PGoApi:
                 method = RequestType.Value(name)
                 self.log.debug("Adding '%s' to RPC request", name)
 
-            self.call_method(method, position, callback)
+            self.call_method(method, position, callback, acc)
 
         if func.upper() in RequestType.keys():
             return function
         else:
             raise AttributeError
 
-    def call_method(self, method, position, callback):
-        self._work_queue.put((method, position, callback))
+    def call_method(self, method, position, callback, acc):
+        self._tasks.push(acc, (method, position, callback))
 
     def empty_work_queue(self):
-        while not self._work_queue.empty():
-            try:
-                self._work_queue.get(False)
-                self._work_queue.task_done()
-            except Queue.Empty:
-                return
+        while len(self._tasks):
+            self._tasks.popRandom()
 
     def is_work_queue_empty(self):
-        return self._work_queue.empty()
+        return 0 == len(self._tasks)
 
     def wait_until_done(self):
-        self._work_queue.join()
+        self._tasks.join()
+
 
 
 class PGoApiWorker(Thread):
@@ -166,42 +232,43 @@ class PGoApiWorker(Thread):
     # In case the server returns a status code 3, this has to be requested
     SC_3_REQUESTS = [RequestType.Value("GET_PLAYER")]
 
-    def __init__(self, signature_lib_path, work_queue, auth_queue):
+    def __init__(self, signature_lib_path, task_queue, auths):
         Thread.__init__(self)
         self.log = logging.getLogger(__name__)
         self._running = True
 
-        self._work_queue = work_queue
-        self._auth_queue = auth_queue
+        self.auths = auths
+        self.tasks = task_queue
         self.rpc_api = RpcApi(None)
         self.rpc_api.activate_signature(signature_lib_path)
 
-    def _get_auth_provider(self):
-        while True:  # Maybe change this loop to something more beautiful?
-            next_call, auth_provider = self._auth_queue.get()
-            if (time.time() + self.THROTTLE_TIME < next_call):
-                # Probably one of the sidelined auth providers, skip it
-                self._auth_queue.put((next_call, auth_provider))
-            else:
-                # Sleep until the auth provider is ready
-                if (time.time() < next_call):  # Kind of a side effect -> bad
-                    time.sleep(max(next_call - time.time(), 0))
-                return (next_call, auth_provider)
-
     def run(self):
+        def abort(acc, item):
+            self.tasks.push(acc, item, reAdd=True)
+
+        didWork = True
         while self._running:
-            method, position, callback = self._work_queue.get()
+            if not didWork:
+                time.sleep(0.1)
+            didWork = False
+
+            acc, item = self.tasks.popRandom()
             if not self._running:
-                self._work_queue.put((method, position, callback))
-                self._work_queue.task_done()
+                abort(acc, item)
                 continue
 
-            next_call, auth_provider = self._get_auth_provider()
-            if not self._running:
-                self._auth_queue.put((next_call, auth_provider))
-                self._work_queue.put((method, position, callback))
-                self._work_queue.task_done()
+            if not acc in self.auths:
                 continue
+
+            next_call, auth_provider = self.auths[acc]
+            if time.time() < next_call:
+                # need to wait with this 1
+                abort(acc, item)
+                continue
+
+
+            self.log.info("Will work with [{}] -> [{}]".format(acc, item))
+            method, position, callback = item
 
             # Let's do this.
             self.rpc_api._auth_provider = auth_provider
@@ -218,12 +285,13 @@ class PGoApiWorker(Thread):
                     self.log.error("Error in worker thread. Returning empty response. Error: {}".format(e))
                     next_call = time.time() + self.THROTTLE_TIME
 
-                self._work_queue.put((method, position, callback))
+                abort(acc, item)
                 response = {}
 
-            self._work_queue.task_done()
+            self.tasks.done(acc)
             self.rpc_api._auth_provider = None
-            self._auth_queue.put((next_call, auth_provider))
+
+            didWork = True
             callback(response)
 
     def stop(self):
